@@ -1,21 +1,27 @@
 # scripts/04_finetune.py
 
+#this code fine tunes the DistilBert model for QA using the cleaned squad format data
+#we want to train a AQ model that takes a question and a context to learn to extract the answere
+# we want the QA model to be trained on the Question and answeres that we made and use
+#back propegation to adjust the weights
 from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer, AutoModelForQuestionAnswering, TrainingArguments, Trainer
 import os
 
-# 强制使用 CPU
+
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-# ===== 配置模型和 tokenizer =====
+# load distilbert model and tokenizer
 model_name = "distilbert-base-cased-distilled-squad"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForQuestionAnswering.from_pretrained(model_name)
 
-# ===== 加载清洗好的 SQuAD 格式数据 =====
+# use cleaned squad json file for dataset
 dataset = load_dataset("json", data_files={"train": "data/squad/clean_train.json"}, field="data")
 
-# ===== 扁平化成单个样本格式 =====
+# flatten squad format into indaviduals
+#we take nested squad format into rows
+#the rows are context, question, answere and answere start
 samples = []
 for item in dataset["train"]:
     for paragraph in item["paragraphs"]:
@@ -26,7 +32,7 @@ for item in dataset["train"]:
             answer_text = answer["text"]
             answer_start = answer["answer_start"]
             if context[answer_start:answer_start + len(answer_text)] != answer_text:
-                continue  # 答案位置不匹配，跳过
+                continue
             samples.append({
                 "context": context,
                 "question": question,
@@ -36,18 +42,22 @@ for item in dataset["train"]:
 
 dataset = Dataset.from_list(samples)
 
-# ===== 划分训练集和验证集 =====
+# split the data into train and test
 split_dataset = dataset.train_test_split(test_size=0.1)
 train_dataset = split_dataset["train"]
 eval_dataset = split_dataset["test"]
 
-# ===== 预处理函数：构建 token 级别的 answer span =====
+# we have to preprocess each one for training
+# to do this we tokenize the question-context pair
+# find which tokens align with start and end of answere span
+# we need to re do the 'starts' number to match the new tokens so we remake this one
+# add a start position and end position for where the toekn aligns
 def preprocess(example):
     tokenized = tokenizer(
         example["question"],
         example["context"],
         max_length=384,
-        truncation="only_second",  # 保证截断发生在 context 部分
+        truncation="only_second",
         padding="max_length",
         return_offsets_mapping=True
     )
@@ -64,7 +74,7 @@ def preprocess(example):
         if start < end_char <= end:
             end_token = idx
 
-    # fallback：找不到就设为0，防止训练crash
+    # if it doesn't find it just give it 0 and 0 
     if start_token is None or end_token is None:
         start_token = end_token = 0
 
@@ -72,15 +82,15 @@ def preprocess(example):
         "start_positions": start_token,
         "end_positions": end_token
     })
-    tokenized.pop("offset_mapping")  # 不保留 offset
+    tokenized.pop("offset_mapping")
 
     return tokenized
 
-# ===== Tokenize 数据 =====
+# apply the preprocessing to the train and test
 train_tokenized = train_dataset.map(preprocess, remove_columns=train_dataset.column_names)
 eval_tokenized = eval_dataset.map(preprocess, remove_columns=eval_dataset.column_names)
 
-# ===== 设置训练参数 =====
+# set up the training config
 training_args = TrainingArguments(
     output_dir="models/distilbert-qa",
     evaluation_strategy="epoch",
@@ -96,7 +106,7 @@ training_args = TrainingArguments(
     report_to="none"
 )
 
-# ===== Trainer =====
+# set up trainer api
 trainer = Trainer(
     model=model,
     args=training_args,
@@ -105,8 +115,9 @@ trainer = Trainer(
     tokenizer=tokenizer
 )
 
-# ===== 开始训练 =====
-print("🚀 开始 fine-tune...")
+# train
+print("fine-tune...")
 trainer.train()
+#save the fine tuned model
 tokenizer.save_pretrained("models/distilbert-qa")
-print("\n✅ 模型已保存到 models/distilbert-qa")
+print("\nmodels/distilbert-qa")
